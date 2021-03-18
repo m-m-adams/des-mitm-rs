@@ -1,43 +1,44 @@
-use des::{decrypt, encrypt};
+use openssl::symm::{Cipher, Crypter, Mode};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::time::Instant;
+//use rustc_hash::FxHashMap as HashMap;
 fn main() {
     let now = Instant::now();
-    let keys = Key::new();
-    let npairs = 28; //actually log(npairs)
+    let keys = Key::new(0);
+    let npairs = 1 << 30; //actually log(npairs)
     let m: HashMap<u64, u64> = keys
         .into_iter()
-        .take(1 << npairs)
+        .take(npairs)
         .par_bridge()
-        .map(move |k| ((hash(k)), k))
+        .map(move |k| (hash(k), k))
         .collect();
 
     println!(
-        "generated {} pairs in {} seconds",
+        "generated {} pairs in {:?} seconds",
         m.keys().len(),
-        now.elapsed().as_secs()
+        now.elapsed()
     );
 
-    let keys = Key::new();
+    let keys = Key::new(0x9000ffff);
     let mat = keys.into_iter().par_bridge().find_any(|k| {
-        let h = (dehash(*k));
+        let h = dehash(*k);
         m.contains_key(&h)
     });
 
     match mat {
         Some(k) => {
-            let dh = (dehash(k));
+            let dh = dehash(k);
             println!(
-                "encryption with {:016x} and decryption with {:016x} produce {:016x}",
-                m[&dh], k, dh
+                "Dones in {:?} seconds!\nEncryption with {:016x} and decryption with {:016x} produce {:016x}",
+                now.elapsed(), m[&dh], k, dh
             );
         }
         None => println!("No match found"),
     }
 }
-
+#[allow(dead_code)]
 fn testformat(i: u64) -> u32 {
     u32::from_be_bytes(i.to_be_bytes()[0..4].try_into().unwrap())
 }
@@ -48,8 +49,8 @@ struct Key {
 }
 
 impl Key {
-    fn new() -> Key {
-        Key { key: 0 }
+    fn new(i: u64) -> Key {
+        Key { key: i }
     }
 }
 
@@ -65,19 +66,31 @@ impl Iterator for Key {
 fn hash(key: u64) -> u64 {
     let plaintext = b"weakhash";
 
-    let deskey = key.to_be_bytes();
-
-    let cipher = encrypt(plaintext, &deskey);
-    u64::from_be_bytes(cipher.try_into().expect("wrong length"))
+    let deskey = &key.to_be_bytes()[..];
+    let mut cr = Crypter::new(Cipher::des_ecb(), Mode::Encrypt, deskey, None).unwrap();
+    cr.pad(false);
+    let data_len = plaintext.len();
+    let blocksize = Cipher::des_ecb().block_size();
+    let mut ciphertext = vec![0; data_len + blocksize];
+    cr.update(plaintext, &mut ciphertext).unwrap();
+    u64::from_be_bytes(ciphertext[0..8].try_into().expect("wrong length"))
 }
 
 fn dehash(key: u64) -> u64 {
-    let ciphertext = 0xda99d1ea64144f3eu64;
-
-    let deskey = key.to_be_bytes();
-
-    let cipher = decrypt(&ciphertext.to_be_bytes(), &deskey);
-    u64::from_be_bytes(cipher.try_into().expect("wrong length"))
+    let ciphertext = &0xda99d1ea64144f3eu64.to_be_bytes()[..];
+    let mut cr = Crypter::new(
+        Cipher::des_ecb(),
+        Mode::Decrypt,
+        &key.to_be_bytes()[..],
+        None,
+    )
+    .unwrap();
+    cr.pad(false);
+    let data_len = ciphertext.len();
+    let blocksize = Cipher::des_ecb().block_size();
+    let mut plaintext = vec![0; data_len + blocksize];
+    cr.update(ciphertext, &mut plaintext).unwrap();
+    u64::from_be_bytes(plaintext[0..8].try_into().expect("wrong length"))
 }
 
 #[cfg(test)]
@@ -94,7 +107,7 @@ mod tests {
             let file = File::open(filename)?;
             Ok(io::BufReader::new(file).lines())
         }
-        let mut keygen = super::Key::new();
+        let mut keygen = super::Key::new(0);
         if let Ok(lines) = read_lines("./des_keys.txt") {
             // Consumes the iterator, returns an (Optional) String
             for line in lines {
@@ -110,7 +123,7 @@ mod tests {
     }
     #[test]
     fn test_hash() {
-        let mut keygen = super::Key::new();
+        let mut keygen = super::Key::new(0);
         keygen.next();
 
         let ciphered = super::hash(keygen.key);
@@ -120,7 +133,7 @@ mod tests {
     }
     #[test]
     fn test_dehash() {
-        let mut keygen = super::Key::new();
+        let mut keygen = super::Key::new(0);
         keygen.next();
 
         let ciphered = super::dehash(keygen.key);

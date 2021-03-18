@@ -1,5 +1,5 @@
 [package]
-name = "des-mitm-rs"
+name = "des_mitm"
 version = "0.1.0"
 authors = ["m-m-adams <52469396+m-m-adams@users.noreply.github.com>"]
 edition = "2018"
@@ -8,7 +8,4 @@ edition = "2018"
 
 [dependencies]
 rayon = "1.5"
-des = "0.0.2"
-block-modes = "0.7.0"
-hex-literal = "0.3.1"
-byteorder = "1"
+openssl = "0.10.33"
