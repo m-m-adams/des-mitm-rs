@@ -7,7 +7,7 @@ use std::time::Instant;
 fn main() {
     let now = Instant::now();
     let keys = Key::new(0);
-    let npairs = 1 << 30; //actually log(npairs)
+    let npairs = 1 << 29; //with some testing this is a roughly even encrypt/decrypt split
     let m: HashMap<u64, u64> = keys
         .into_iter()
         .take(npairs)
@@ -31,7 +31,7 @@ fn main() {
         Some(k) => {
             let dh = dehash(k);
             println!(
-                "Dones in {:?} seconds!\nEncryption with {:016x} and decryption with {:016x} produce {:016x}",
+                "Done in {:?} seconds!\nEncryption with {:016x} and decryption with {:016x} produce {:016x}",
                 now.elapsed(), m[&dh], k, dh
             );
         }
