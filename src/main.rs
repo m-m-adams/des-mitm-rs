@@ -13,7 +13,7 @@ use crossbeam_channel::{bounded, Sender};
 fn main() {
     let nenc = 15;
     let ndec = 15;
-    let npairs = 1 << 26;
+    let npairs = 1 << 20;
     let (sender, receiver) = bounded(100);
     let start = Instant::now();
 
@@ -21,9 +21,9 @@ fn main() {
         let s = sender.clone();
         thread::spawn(move || chain_hash(KeyType::Enc(seed), s));
     }
-    let mut keypairs: HashMap<u64, KeyType> = HashMap::new();
+    let mut keypairs: HashMap<u32, KeyType> = HashMap::new();
     for kp in receiver.iter().take(npairs) {
-        keypairs.insert(kp.hash, kp.key);
+        keypairs.insert(testformat(kp.hash), kp.key);
     }
     let finished = Instant::now();
     println!(
@@ -31,14 +31,24 @@ fn main() {
         keypairs.keys().len(),
         finished.duration_since(start)
     );
+    let (sender, receiver) = bounded(100);
+
     for seed in (0..u64::MAX).step_by(u64::MAX as usize / (ndec - 1)) {
         let s = sender.clone();
         thread::spawn(move || chain_hash(KeyType::Dec(seed), s));
     }
     let m = receiver
         .into_iter()
-        .find(|k| keypairs.contains_key(&k.hash));
-    println!("Matched {}", m.unwrap())
+        .find(|k| keypairs.contains_key(&testformat(k.hash)))
+        .unwrap();
+    let matched = Instant::now();
+    println!(
+        "Match found in {:?}!\n{} and {} are both {:08x}",
+        matched.duration_since(finished),
+        m.key,
+        keypairs.get(&testformat(m.hash)).unwrap(),
+        testformat(m.hash)
+    )
 }
 #[allow(dead_code)]
 fn testformat(i: u64) -> u32 {
@@ -53,6 +63,14 @@ fn chain_hash(seed: KeyType, s: Sender<Keypair>) {
 enum KeyType {
     Enc(u64),
     Dec(u64),
+}
+impl fmt::Display for KeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyType::Enc(k) => write!(f, "enc({:016x})", k),
+            KeyType::Dec(k) => write!(f, "dec({:016x})", k),
+        }
+    }
 }
 #[derive(Debug, Clone, Copy)]
 struct Keypair {
