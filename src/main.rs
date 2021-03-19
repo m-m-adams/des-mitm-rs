@@ -12,12 +12,12 @@ use crossbeam_channel::{bounded, Sender};
 //use rustc_hash::FxHashMap as HashMap;
 fn main() {
     let nthreads = 16;
-    let npairs = 1 << 20;
-    let (sender, receiver) = bounded(0);
+    let npairs = 1 << 26;
+    let (sender, receiver) = bounded(100);
     let mut keypairs: HashMap<u64, keytype> = HashMap::new();
     let start = Instant::now();
 
-    for seed in (0..u64::MAX).step_by(u64::MAX as usize / nthreads) {
+    for seed in (0..u64::MAX).step_by(u64::MAX as usize / (nthreads - 1)) {
         let s = sender.clone();
         thread::spawn(move || chain_hash(seed, s));
     }
