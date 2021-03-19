@@ -1,65 +1,98 @@
 use openssl::symm::{Cipher, Crypter, Mode};
-use rayon::prelude::*;
+//use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Instant;
+
+use crossbeam_channel::{bounded, Sender};
+
 //use rustc_hash::FxHashMap as HashMap;
 fn main() {
-    let now = Instant::now();
-    let keys = Key::new(0);
-    let npairs = 1 << 30; //actually log(npairs)
-    let m: HashMap<u64, u64> = keys
-        .into_iter()
-        .take(npairs)
-        .par_bridge()
-        .map(move |k| (hash(k), k))
-        .collect();
+    let nthreads = 16;
+    let npairs = 1 << 20;
+    let (sender, receiver) = bounded(0);
+    let mut keypairs: HashMap<u64, keytype> = HashMap::new();
+    let start = Instant::now();
 
-    println!(
-        "generated {} pairs in {:?} seconds",
-        m.keys().len(),
-        now.elapsed()
-    );
-
-    let keys = Key::new(0x9000ffff);
-    let mat = keys.into_iter().par_bridge().find_any(|k| {
-        let h = dehash(*k);
-        m.contains_key(&h)
-    });
-
-    match mat {
-        Some(k) => {
-            let dh = dehash(k);
-            println!(
-                "Dones in {:?} seconds!\nEncryption with {:016x} and decryption with {:016x} produce {:016x}",
-                now.elapsed(), m[&dh], k, dh
-            );
-        }
-        None => println!("No match found"),
+    for seed in (0..u64::MAX).step_by(u64::MAX as usize / nthreads) {
+        let s = sender.clone();
+        thread::spawn(move || chain_hash(seed, s));
     }
+    for keys in receiver.iter().take(npairs) {
+        keypairs.insert(keys.hash, keys.key);
+    }
+    let finished = Instant::now();
+    println!(
+        "Generated {} keys in {:?}",
+        keypairs.keys().len(),
+        finished.duration_since(start)
+    )
 }
 #[allow(dead_code)]
 fn testformat(i: u64) -> u32 {
     u32::from_be_bytes(i.to_be_bytes()[0..4].try_into().unwrap())
 }
-
-#[derive(Debug)]
-struct Key {
-    pub key: u64,
+fn chain_hash(seed: u64, s: Sender<Keypair>) {
+    let mut keypair = Keypair::new_enc(seed).into_iter();
+    while s.send(keypair.next().unwrap()).is_ok() {}
 }
 
-impl Key {
-    fn new(i: u64) -> Key {
-        Key { key: i }
+#[derive(Debug, Clone, Copy)]
+enum keytype {
+    enc(u64),
+    dec(u64),
+}
+#[derive(Debug, Clone, Copy)]
+struct Keypair {
+    key: keytype,
+    hash: u64,
+}
+
+impl fmt::Display for Keypair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.key {
+            keytype::enc(k) => write!(f, "{:016x} hashes to {:016x}", k, self.hash),
+            keytype::dec(k) => write!(f, "{:016x} dehashes to {:016x}", k, self.hash),
+        }
     }
 }
 
-impl Iterator for Key {
-    type Item = u64;
+impl Keypair {
+    pub fn new_enc(seed: u64) -> Keypair {
+        Keypair {
+            key: keytype::enc(seed),
+            hash: hash(seed),
+        }
+    }
+    pub fn new_dec(seed: u64) -> Keypair {
+        Keypair {
+            key: keytype::dec(seed),
+            hash: dehash(seed),
+        }
+    }
+}
+
+impl Iterator for Keypair {
+    type Item = Keypair;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.key = (self.key | 0x0101010101010101) + 1;
-        Some(self.key)
+        match self.key {
+            keytype::enc(i) => {
+                let h = hash(self.hash);
+                self.key = keytype::enc(self.hash);
+                self.hash = h;
+                Some(*self)
+            }
+            keytype::dec(i) => {
+                let h = dehash(self.hash);
+                self.key = keytype::dec(self.hash);
+                self.hash = h;
+                Some(*self)
+            }
+        }
     }
 }
 
@@ -95,50 +128,42 @@ fn dehash(key: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::io::{self, BufRead};
-    use std::path::Path;
-    //#[test]
+    use super::*;
+    #[test]
     fn test_key_gen() {
-        fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
-        where
-            P: AsRef<Path>,
-        {
-            let file = File::open(filename)?;
-            Ok(io::BufReader::new(file).lines())
+        let e = Keypair::new_enc(0);
+        let d = Keypair::new_dec(0);
+
+        if let keytype::enc(i) = e.key {
+            if let keytype::dec(j) = d.key {
+                assert_eq!(i, j);
+                assert_ne!(e.hash, d.hash)
+            }
         }
-        let mut keygen = super::Key::new(0);
-        if let Ok(lines) = read_lines("./des_keys.txt") {
-            // Consumes the iterator, returns an (Optional) String
-            for line in lines {
-                if let Ok(hex) = line {
-                    let good = u64::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap();
-                    if let Some(gen_hex) = keygen.next() {
-                        println!("{:x} from file, {:x} generated", good, gen_hex);
-                        assert_eq!(good, gen_hex)
-                    }
-                }
+        let e2 = e.into_iter().next().unwrap();
+        let d2 = d.into_iter().next().unwrap();
+        println!("{:?}, {:?}", e2, d2);
+        if let keytype::enc(i) = e2.key {
+            if let keytype::dec(j) = d2.key {
+                assert_ne!(i, j);
+                assert_ne!(e.hash, d.hash)
             }
         }
     }
     #[test]
     fn test_hash() {
-        let mut keygen = super::Key::new(0);
-        keygen.next();
-
-        let ciphered = super::hash(keygen.key);
+        let key: u64 = 0x01010102;
+        let ciphered = super::hash(key);
         let known = 0x64685164220c91ae;
-        println!("{:016x}\n{:x} \n{:x}", &keygen.key, ciphered, known);
+        println!("{:016x}\n{:x} \n{:x}", key, ciphered, known);
         assert_eq!(ciphered, known)
     }
     #[test]
     fn test_dehash() {
-        let mut keygen = super::Key::new(0);
-        keygen.next();
-
-        let ciphered = super::dehash(keygen.key);
+        let key: u64 = 0x01010102;
+        let ciphered = super::dehash(key);
         let known = 0x2b2e9341c0351820;
-        println!("{:016x}\n{:x} \n{:x}", &keygen.key, ciphered, known);
+        println!("{:016x}\n{:x} \n{:x}", key, ciphered, known);
         assert_eq!(ciphered, known)
     }
 }

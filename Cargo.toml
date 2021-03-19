@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 rayon = "1.5"
 openssl = "0.10.33"
+crossbeam-channel = "0.5.0"

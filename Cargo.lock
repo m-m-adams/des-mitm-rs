@@ -73,6 +73,7 @@ dependencies = [
 name = "des_mitm"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "openssl",
  "rayon",
 ]
