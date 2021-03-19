@@ -3,7 +3,7 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+//use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -11,66 +11,75 @@ use crossbeam_channel::{bounded, Sender};
 
 //use rustc_hash::FxHashMap as HashMap;
 fn main() {
-    let nthreads = 16;
+    let nenc = 15;
+    let ndec = 15;
     let npairs = 1 << 26;
     let (sender, receiver) = bounded(100);
-    let mut keypairs: HashMap<u64, keytype> = HashMap::new();
     let start = Instant::now();
 
-    for seed in (0..u64::MAX).step_by(u64::MAX as usize / (nthreads - 1)) {
+    for seed in (0..u64::MAX).step_by(u64::MAX as usize / (nenc - 1)) {
         let s = sender.clone();
-        thread::spawn(move || chain_hash(seed, s));
+        thread::spawn(move || chain_hash(KeyType::Enc(seed), s));
     }
-    for keys in receiver.iter().take(npairs) {
-        keypairs.insert(keys.hash, keys.key);
+    let mut keypairs: HashMap<u64, KeyType> = HashMap::new();
+    for kp in receiver.iter().take(npairs) {
+        keypairs.insert(kp.hash, kp.key);
     }
     let finished = Instant::now();
     println!(
         "Generated {} keys in {:?}",
         keypairs.keys().len(),
         finished.duration_since(start)
-    )
+    );
+    for seed in (0..u64::MAX).step_by(u64::MAX as usize / (ndec - 1)) {
+        let s = sender.clone();
+        thread::spawn(move || chain_hash(KeyType::Dec(seed), s));
+    }
+    let m = receiver
+        .into_iter()
+        .find(|k| keypairs.contains_key(&k.hash));
+    println!("Matched {}", m.unwrap())
 }
 #[allow(dead_code)]
 fn testformat(i: u64) -> u32 {
     u32::from_be_bytes(i.to_be_bytes()[0..4].try_into().unwrap())
 }
-fn chain_hash(seed: u64, s: Sender<Keypair>) {
-    let mut keypair = Keypair::new_enc(seed).into_iter();
+fn chain_hash(seed: KeyType, s: Sender<Keypair>) {
+    let mut keypair = Keypair::new(seed).into_iter();
     while s.send(keypair.next().unwrap()).is_ok() {}
 }
 
 #[derive(Debug, Clone, Copy)]
-enum keytype {
-    enc(u64),
-    dec(u64),
+enum KeyType {
+    Enc(u64),
+    Dec(u64),
 }
 #[derive(Debug, Clone, Copy)]
 struct Keypair {
-    key: keytype,
+    key: KeyType,
     hash: u64,
 }
 
 impl fmt::Display for Keypair {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.key {
-            keytype::enc(k) => write!(f, "{:016x} hashes to {:016x}", k, self.hash),
-            keytype::dec(k) => write!(f, "{:016x} dehashes to {:016x}", k, self.hash),
+            KeyType::Enc(k) => write!(f, "{:016x} hashes to {:016x}", k, self.hash),
+            KeyType::Dec(k) => write!(f, "{:016x} dehashes to {:016x}", k, self.hash),
         }
     }
 }
 
 impl Keypair {
-    pub fn new_enc(seed: u64) -> Keypair {
-        Keypair {
-            key: keytype::enc(seed),
-            hash: hash(seed),
-        }
-    }
-    pub fn new_dec(seed: u64) -> Keypair {
-        Keypair {
-            key: keytype::dec(seed),
-            hash: dehash(seed),
+    pub fn new(seed: KeyType) -> Keypair {
+        match seed {
+            KeyType::Enc(k) => Keypair {
+                key: seed,
+                hash: hash(k),
+            },
+            KeyType::Dec(k) => Keypair {
+                key: seed,
+                hash: dehash(k),
+            },
         }
     }
 }
@@ -80,15 +89,15 @@ impl Iterator for Keypair {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.key {
-            keytype::enc(i) => {
+            KeyType::Enc(_) => {
                 let h = hash(self.hash);
-                self.key = keytype::enc(self.hash);
+                self.key = KeyType::Enc(self.hash);
                 self.hash = h;
                 Some(*self)
             }
-            keytype::dec(i) => {
+            KeyType::Dec(_) => {
                 let h = dehash(self.hash);
-                self.key = keytype::dec(self.hash);
+                self.key = KeyType::Dec(self.hash);
                 self.hash = h;
                 Some(*self)
             }
@@ -131,11 +140,11 @@ mod tests {
     use super::*;
     #[test]
     fn test_key_gen() {
-        let e = Keypair::new_enc(0);
-        let d = Keypair::new_dec(0);
+        let e = Keypair::new(KeyType::Enc(0));
+        let d = Keypair::new(KeyType::Enc(0));
 
-        if let keytype::enc(i) = e.key {
-            if let keytype::dec(j) = d.key {
+        if let KeyType::Enc(i) = e.key {
+            if let KeyType::Dec(j) = d.key {
                 assert_eq!(i, j);
                 assert_ne!(e.hash, d.hash)
             }
@@ -143,8 +152,8 @@ mod tests {
         let e2 = e.into_iter().next().unwrap();
         let d2 = d.into_iter().next().unwrap();
         println!("{:?}, {:?}", e2, d2);
-        if let keytype::enc(i) = e2.key {
-            if let keytype::dec(j) = d2.key {
+        if let KeyType::Enc(i) = e2.key {
+            if let KeyType::Dec(j) = d2.key {
                 assert_ne!(i, j);
                 assert_ne!(e.hash, d.hash)
             }
